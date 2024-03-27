@@ -24,3 +24,7 @@ It currently is managed on two projects:
 [Build AstronAuth](https://github.com/users/miniluz/projects/1/views/1)
 and
 [AstronAuth Requirements](https://github.com/users/miniluz/projects/2/views/1).
+
+## Architecture
+
+Detailed on the [relevant issue](https://github.com/miniluz/AstronAuth/issues/3).
