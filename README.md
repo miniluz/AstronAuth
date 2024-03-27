@@ -17,3 +17,10 @@ and management of the users and their roles.
 In lieu of a front-end,
 it will also provide a CLI interface for interacting with these endpoints
 as client or user.
+
+## Management
+
+It currently is managed on two projects:
+[Build AstronAuth](https://github.com/users/miniluz/projects/1/views/1)
+and
+[AstronAuth Requirements](https://github.com/users/miniluz/projects/2/views/1).
