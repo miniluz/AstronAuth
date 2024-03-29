@@ -24,6 +24,7 @@
           pkgs = import nixpkgs {
             inherit system overlays;
           };
+
           rustToolchain = pkgs.pkgsBuildHost.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
           src = craneLib.cleanCargoSource (craneLib.path ./.);
@@ -57,6 +58,7 @@
           };
           devShells.default = mkShell {
             inherit nativeBuildInputs;
+            buildInputs = [ bacon ];
             RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           };
         }
