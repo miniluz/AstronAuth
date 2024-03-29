@@ -58,7 +58,7 @@
           };
           devShells.default = mkShell {
             inherit nativeBuildInputs;
-            buildInputs = [ bacon ];
+            buildInputs = [ ];
             RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           };
         }
