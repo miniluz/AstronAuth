@@ -59,6 +59,17 @@ impl Into<String> for Scope {
     }
 }
 
+/// Extracs all params not contained in non_opaque_keys.
+/// Returns (opaque_parameters, remaining_parameters)
+fn extract_opaque_parameters(
+    parameters: Vec<(String, String)>,
+    non_opaque_keys: &[&str],
+) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    return parameters
+        .into_iter()
+        .partition(|(key, _value)| !non_opaque_keys.contains(&&**key));
+}
+
 /// Represents the authorization request query.
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthorizationRequestQuery {
@@ -186,17 +197,27 @@ impl std::str::FromStr for AuthorizationRequestQuery {
             }
         }
 
-        let mut opaque_parameters: Vec<(String, String)> = vec![];
+        let parameters =
+            serde_urlencoded::from_str(query).map_err(|err| Error::ParsingError(err))?;
+
+        let (opaque_parameters, non_opaque_parameters) = extract_opaque_parameters(
+            parameters,
+            &[
+                RESPONSE_TYPE_PARAM,
+                CLIENT_ID_PARAM,
+                REDIRECT_URI_PARAM,
+                SCOPE_PARAM,
+                STATE_PARAM,
+            ],
+        );
+
         let mut response_type: OptionUndefined<ResponseType> = OptionUndefined::Undefined;
         let mut client_id: OptionUndefined<ClientId> = OptionUndefined::Undefined;
         let mut redirect_uri: OptionUndefined<RedirectUri> = OptionUndefined::Undefined;
         let mut scope: OptionUndefined<ScopeList> = OptionUndefined::Undefined;
         let mut state: OptionUndefined<State> = OptionUndefined::Undefined;
 
-        let key_value_pairs: Vec<(String, String)> =
-            serde_urlencoded::from_str(query).map_err(|err| Error::ParsingError(err))?;
-
-        for (key, value) in key_value_pairs {
+        for (key, value) in non_opaque_parameters {
             match &*key {
                 RESPONSE_TYPE_PARAM => {
                     response_type = response_type.try_define(value, RESPONSE_TYPE_PARAM)?;
@@ -213,9 +234,7 @@ impl std::str::FromStr for AuthorizationRequestQuery {
                 STATE_PARAM => {
                     state = state.try_define(value, STATE_PARAM)?;
                 }
-                _ => {
-                    opaque_parameters.push((key, value));
-                }
+                _ => { /* should be unreachable */ }
             }
         }
 
