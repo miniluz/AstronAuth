@@ -1,5 +1,6 @@
 //! This module is necessary to handle the requirements the RFC has for preserving the query
 
+use itertools::{Either, Itertools};
 use poem::{
     error::ResponseError,
     http::{StatusCode, Uri},
@@ -10,15 +11,67 @@ use tracing::instrument;
 #[cfg(test)]
 mod test;
 
-pub const RESPONSE_TYPE_PARAM: &str = "response_type";
+trait QueryParams: std::str::FromStr {
+    fn name(&self) -> &'static str;
+    fn names() -> &'static [&'static str];
+
+    fn split(key_value: (String, String)) -> Either<(String, String), (Self, String)> {
+        match (&*key_value.0).parse::<Self>() {
+            Err(_) => Either::Left((key_value.0, key_value.1)),
+            Ok(param) => Either::Right((param, key_value.1)),
+        }
+    }
+}
+
+enum AuthorizationQueryParams {
+    ResponseType,
+    ClientId,
+    RedirectUri,
+    Scope,
+    State,
+}
+
+impl std::str::FromStr for AuthorizationQueryParams {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "response_type" => Ok(Self::ResponseType),
+            "client_id" => Ok(Self::ClientId),
+            "redirect_uri" => Ok(Self::RedirectUri),
+            "scope" => Ok(Self::Scope),
+            "state" => Ok(Self::State),
+            _ => Err(()),
+        }
+    }
+}
+
+impl QueryParams for AuthorizationQueryParams {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::ResponseType => "response_type",
+            Self::ClientId => "client_id",
+            Self::RedirectUri => "redirect_uri",
+            Self::Scope => "scope",
+            Self::State => "state",
+        }
+    }
+
+    fn names() -> &'static [&'static str] {
+        &[
+            "response_type",
+            "client_id",
+            "redirect_uri",
+            "scope",
+            "state",
+        ]
+    }
+}
+
 pub type ResponseType = String;
-pub const CLIENT_ID_PARAM: &str = "client_id";
 pub type ClientId = String;
-pub const REDIRECT_URI_PARAM: &str = "redirect_uri";
 pub type RedirectUri = Uri;
-pub const SCOPE_PARAM: &str = "scope";
 pub type ScopeList = Vec<Scope>;
-pub const STATE_PARAM: &str = "state";
 pub type State = String;
 
 /// A scope is a valid scope according to
@@ -61,13 +114,12 @@ impl Into<String> for Scope {
 
 /// Extracs all params not contained in non_opaque_keys.
 /// Returns (opaque_parameters, remaining_parameters)
-fn extract_opaque_parameters(
+fn extract_opaque_parameters<T: QueryParams>(
     parameters: Vec<(String, String)>,
-    non_opaque_keys: &[&str],
-) -> (Vec<(String, String)>, Vec<(String, String)>) {
+) -> (Vec<(String, String)>, Vec<(T, String)>) {
     return parameters
         .into_iter()
-        .partition(|(key, _value)| !non_opaque_keys.contains(&&**key));
+        .partition_map(|key_value| T::split(key_value));
 }
 
 /// Represents the authorization request query.
@@ -105,9 +157,12 @@ impl ResponseError for AuthorizationQueryParsingError {
     // TODO: Implement actual statuses
     fn status(&self) -> StatusCode {
         match self {
-            Self::MissingParameter(REDIRECT_URI_PARAM) | Self::InvalidUri => {
+            Self::MissingParameter(param)
+                if *param == AuthorizationQueryParams::RedirectUri.name() =>
+            {
                 StatusCode::BAD_REQUEST
             }
+            Self::InvalidUri => StatusCode::BAD_REQUEST,
             _ => StatusCode::SEE_OTHER,
         }
     }
@@ -123,6 +178,7 @@ impl std::str::FromStr for AuthorizationRequestQuery {
     type Err = AuthorizationQueryParsingError;
     /// Tries to generate itself from a still percentage-encoded string.
     fn from_str(query: &str) -> Result<Self, Self::Err> {
+        use AuthorizationQueryParams as Params;
         use AuthorizationQueryParsingError as Error;
 
         #[derive(Debug)]
@@ -163,7 +219,9 @@ impl std::str::FromStr for AuthorizationRequestQuery {
         impl OptionUndefined<Vec<Scope>> {
             fn try_define(self, value: String) -> std::result::Result<Self, Error> {
                 match self {
-                    Self::Some(_) | Self::None => Err(Error::RepeatedParameter(SCOPE_PARAM)),
+                    Self::Some(_) | Self::None => {
+                        Err(Error::RepeatedParameter(Params::Scope.name()))
+                    }
                     Self::Undefined => {
                         if value == "" {
                             Ok(Self::None)
@@ -183,7 +241,9 @@ impl std::str::FromStr for AuthorizationRequestQuery {
         impl OptionUndefined<Uri> {
             fn try_define(self, value: String) -> std::result::Result<Self, Error> {
                 match self {
-                    Self::Some(_) | Self::None => Err(Error::RepeatedParameter(REDIRECT_URI_PARAM)),
+                    Self::Some(_) | Self::None => {
+                        Err(Error::RepeatedParameter(Params::RedirectUri.name()))
+                    }
                     Self::Undefined => {
                         if value == "" {
                             Ok(Self::None)
@@ -200,16 +260,8 @@ impl std::str::FromStr for AuthorizationRequestQuery {
         let parameters =
             serde_urlencoded::from_str(query).map_err(|err| Error::ParsingError(err))?;
 
-        let (opaque_parameters, non_opaque_parameters) = extract_opaque_parameters(
-            parameters,
-            &[
-                RESPONSE_TYPE_PARAM,
-                CLIENT_ID_PARAM,
-                REDIRECT_URI_PARAM,
-                SCOPE_PARAM,
-                STATE_PARAM,
-            ],
-        );
+        let (opaque_parameters, non_opaque_parameters) =
+            extract_opaque_parameters::<Params>(parameters);
 
         let mut response_type: OptionUndefined<ResponseType> = OptionUndefined::Undefined;
         let mut client_id: OptionUndefined<ClientId> = OptionUndefined::Undefined;
@@ -217,24 +269,23 @@ impl std::str::FromStr for AuthorizationRequestQuery {
         let mut scope: OptionUndefined<ScopeList> = OptionUndefined::Undefined;
         let mut state: OptionUndefined<State> = OptionUndefined::Undefined;
 
-        for (key, value) in non_opaque_parameters {
-            match &*key {
-                RESPONSE_TYPE_PARAM => {
-                    response_type = response_type.try_define(value, RESPONSE_TYPE_PARAM)?;
+        for (param, value) in non_opaque_parameters {
+            match param {
+                Params::ResponseType => {
+                    response_type = response_type.try_define(value, param.name())?;
                 }
-                CLIENT_ID_PARAM => {
-                    client_id = client_id.try_define(value, CLIENT_ID_PARAM)?;
+                Params::ClientId => {
+                    client_id = client_id.try_define(value, param.name())?;
                 }
-                REDIRECT_URI_PARAM => {
+                Params::RedirectUri => {
                     redirect_uri = redirect_uri.try_define(value)?;
                 }
-                SCOPE_PARAM => {
+                Params::Scope => {
                     scope = scope.try_define(value)?;
                 }
-                STATE_PARAM => {
-                    state = state.try_define(value, STATE_PARAM)?;
+                Params::State => {
+                    state = state.try_define(value, param.name())?;
                 }
-                _ => { /* should be unreachable */ }
             }
         }
 
@@ -258,7 +309,7 @@ impl std::str::FromStr for AuthorizationRequestQuery {
         );
 
         match response_type.to_option() {
-            None => return Err(Error::MissingParameter(RESPONSE_TYPE_PARAM)),
+            None => return Err(Error::MissingParameter(Params::ResponseType.name())),
             Some(s) if s != "code" => {
                 return Err(Error::UnsupportedResponseType);
             }
@@ -268,12 +319,12 @@ impl std::str::FromStr for AuthorizationRequestQuery {
 
         let client_id = match client_id.to_option() {
             Some(client_id) => client_id,
-            None => return Err(Error::MissingParameter(CLIENT_ID_PARAM)),
+            None => return Err(Error::MissingParameter(Params::ClientId.name())),
         };
 
         let redirect_uri = match redirect_uri.to_option() {
             Some(redirect_uri) => redirect_uri,
-            None => return Err(Error::MissingParameter(REDIRECT_URI_PARAM)),
+            None => return Err(Error::MissingParameter(Params::RedirectUri.name())),
         };
 
         let result = AuthorizationRequestQuery {

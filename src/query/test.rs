@@ -1,11 +1,9 @@
 use poem::http::Uri;
 
 use super::{
-    AuthorizationQueryParsingError, AuthorizationRequestQuery, CLIENT_ID_PARAM, REDIRECT_URI_PARAM,
-    RESPONSE_TYPE_PARAM, SCOPE_PARAM, STATE_PARAM,
+    AuthorizationQueryParams as Params, AuthorizationQueryParsingError as Error,
+    AuthorizationRequestQuery, QueryParams,
 };
-
-use AuthorizationQueryParsingError as Error;
 
 #[cfg(test)]
 fn parse_authorization_query(query: &str) -> Result<AuthorizationRequestQuery, Error> {
@@ -47,7 +45,7 @@ fn missing_parameters() {
 
     assert_eq!(
         parse_authorization_query(&missing_response_type),
-        Err(Error::MissingParameter(RESPONSE_TYPE_PARAM))
+        Err(Error::MissingParameter(Params::ResponseType.name()))
     );
 
     // parameters without valuesmust be treated as unsent as per section 3.1. of RFC 6749
@@ -60,7 +58,7 @@ fn missing_parameters() {
 
     assert_eq!(
         parse_authorization_query(&missing_response_type),
-        Err(Error::MissingParameter(RESPONSE_TYPE_PARAM))
+        Err(Error::MissingParameter(Params::ResponseType.name()))
     );
 
     // missing client id
@@ -72,7 +70,7 @@ fn missing_parameters() {
 
     assert_eq!(
         parse_authorization_query(&missing_client_id),
-        Err(Error::MissingParameter(CLIENT_ID_PARAM))
+        Err(Error::MissingParameter(Params::ClientId.name()))
     );
 
     let missing_client_id = serde_urlencoded::to_string([
@@ -84,7 +82,7 @@ fn missing_parameters() {
 
     assert_eq!(
         parse_authorization_query(&missing_client_id),
-        Err(Error::MissingParameter(CLIENT_ID_PARAM))
+        Err(Error::MissingParameter(Params::ClientId.name()))
     );
 
     // missing redirect_uri
@@ -94,7 +92,7 @@ fn missing_parameters() {
 
     assert_eq!(
         parse_authorization_query(&missing_redirect_uri),
-        Err(Error::MissingParameter(REDIRECT_URI_PARAM))
+        Err(Error::MissingParameter(Params::RedirectUri.name()))
     );
 
     let missing_redirect_uri = serde_urlencoded::to_string([
@@ -106,7 +104,7 @@ fn missing_parameters() {
 
     assert_eq!(
         parse_authorization_query(&missing_redirect_uri),
-        Err(Error::MissingParameter(REDIRECT_URI_PARAM))
+        Err(Error::MissingParameter(Params::RedirectUri.name()))
     );
 }
 
@@ -191,7 +189,7 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_response_type),
-        Err(Error::RepeatedParameter(RESPONSE_TYPE_PARAM))
+        Err(Error::RepeatedParameter(Params::ResponseType.name()))
     );
 
     let repeated_client_id = serde_urlencoded::to_string([
@@ -206,7 +204,7 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_client_id),
-        Err(Error::RepeatedParameter(CLIENT_ID_PARAM))
+        Err(Error::RepeatedParameter(Params::ClientId.name()))
     );
 
     let repeated_redirect_uri = serde_urlencoded::to_string([
@@ -221,7 +219,7 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_redirect_uri),
-        Err(Error::RepeatedParameter(REDIRECT_URI_PARAM))
+        Err(Error::RepeatedParameter(Params::RedirectUri.name()))
     );
 
     let repeated_scope = serde_urlencoded::to_string([
@@ -236,7 +234,7 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_scope),
-        Err(Error::RepeatedParameter(SCOPE_PARAM))
+        Err(Error::RepeatedParameter(Params::Scope.name()))
     );
 
     let repeated_state = serde_urlencoded::to_string([
@@ -251,7 +249,7 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_state),
-        Err(Error::RepeatedParameter(STATE_PARAM))
+        Err(Error::RepeatedParameter(Params::State.name()))
     );
 }
 

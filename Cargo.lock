@@ -100,6 +100,7 @@ name = "astronauth"
 version = "0.1.0"
 dependencies = [
  "color-eyre",
+ "itertools",
  "poem",
  "poem-openapi",
  "serde_urlencoded",
