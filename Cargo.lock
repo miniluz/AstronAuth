@@ -100,9 +100,9 @@ name = "astronauth"
 version = "0.1.0"
 dependencies = [
  "color-eyre",
- "percent-encoding",
  "poem",
  "poem-openapi",
+ "serde_urlencoded",
  "sqlx",
  "thiserror",
  "tokio",
