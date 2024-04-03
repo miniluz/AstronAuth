@@ -1,0 +1,6 @@
+%syntax-version=1.0.0
+%project=astronauth
+%uri=https://github.com/sqitchers/sqitch-intro/
+
+initial_migration 2024-04-03T16:00:42Z miniluz <miniluz@moonlight> # Initial migration - no changes
+test [initial_migration] 2024-04-03T16:01:02Z miniluz <miniluz@moonlight> # Test tabel

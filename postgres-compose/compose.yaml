@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: docker.io/postgres
+    environment:
+      POSTGRES_USER:
+      POSTGRES_PASSWORD:
+      POSTGRES_DB:
+      POSTGRES_USER_READONLY:
+      POSTGRES_PASSWORD_READONLY:
+    volumes:
+      - type: bind
+        source: ./dbdata
+        target: /var/lib/postgresql/data
+      - type: bind
+        source: ./create-read-only-user.sh
+        target: /docker-entrypoint-initdb.d/create-read-only-user.sh
+        read_only: true
+    ports:
+      - "5432:5432"
