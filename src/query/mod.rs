@@ -148,9 +148,21 @@ pub enum AuthorizationQueryParsingError {
         "invalid scope format on `{0:?}`. check section 3.3 of RFC 6749 for the allowed characters"
     )]
     InvalidScope(String),
-    // TODO: use
     #[error("the redirect_uri is invalid")]
     InvalidUri,
+}
+
+impl AuthorizationQueryParsingError {
+    fn standard_error_text(&self) -> &'static str {
+        match self {
+            Self::UnsupportedResponseType => "unsupported_response_type",
+            Self::MissingParameter(_) | Self::RepeatedParameter(_) | Self::ParsingError(_) => {
+                "invalid_request"
+            }
+            Self::InvalidScope(_) => "invalid_scope",
+            Self::InvalidUri => "server_error",
+        }
+    }
 }
 
 impl ResponseError for AuthorizationQueryParsingError {
@@ -168,9 +180,13 @@ impl ResponseError for AuthorizationQueryParsingError {
     }
 
     fn as_response(&self) -> Response {
-        Response::builder()
-            .status(self.status())
-            .body(self.to_string())
+        let status = self.status();
+        let response_builder = Response::builder().status(status);
+        let response_builder = match status {
+            StatusCode::SEE_OTHER => response_builder.header("Location", "todo"),
+            StatusCode::BAD_REQUEST | _ => response_builder,
+        };
+        response_builder.body(self.to_string())
     }
 }
 

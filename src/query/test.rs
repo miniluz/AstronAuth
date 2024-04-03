@@ -5,7 +5,6 @@ use super::{
     AuthorizationRequestQuery, QueryParams,
 };
 
-#[cfg(test)]
 fn parse_authorization_query(query: &str) -> Result<AuthorizationRequestQuery, Error> {
     query.parse()
 }
