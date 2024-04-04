@@ -11,9 +11,12 @@ use tracing::instrument;
 #[cfg(test)]
 mod test;
 
+mod parsing;
+
 trait QueryParams: std::str::FromStr {
     fn name(&self) -> &'static str;
     fn names() -> &'static [&'static str];
+    fn variants() -> &'static [Self];
 
     fn split(key_value: (String, String)) -> Either<(String, String), (Self, String)> {
         match (&*key_value.0).parse::<Self>() {
@@ -23,6 +26,7 @@ trait QueryParams: std::str::FromStr {
     }
 }
 
+#[derive(Debug, PartialEq)]
 enum AuthorizationQueryParams {
     ResponseType,
     ClientId,
@@ -66,6 +70,16 @@ impl QueryParams for AuthorizationQueryParams {
             "state",
         ]
     }
+
+    fn variants() -> &'static [Self] {
+        &[
+            Self::ResponseType,
+            Self::ClientId,
+            Self::RedirectUri,
+            Self::Scope,
+            Self::State,
+        ]
+    }
 }
 
 pub type ResponseType = String;
@@ -89,7 +103,7 @@ impl std::fmt::Debug for Scope {
 impl TryFrom<&str> for Scope {
     type Error = AuthorizationQueryParsingError;
 
-    fn try_from(value: &str) -> std::prelude::v1::Result<Self, Self::Error> {
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
         if value.len() == 0 {
             return Err(Self::Error::InvalidScope(value.to_owned()));
         }
@@ -138,10 +152,8 @@ pub struct AuthorizationRequestQuery {
 pub enum AuthorizationQueryParsingError {
     #[error("only the \"code\" response_type is supported")]
     UnsupportedResponseType,
-    #[error("parameter {0:?} sent more than once")]
-    RepeatedParameter(&'static str),
-    #[error("query must be in application/x-www-form-urlencoded format")]
-    ParsingError(#[from] serde_urlencoded::de::Error),
+    #[error("{0}")]
+    ParsingError(#[from] parsing::ParsingError),
     #[error("missing parameter {0:?}")]
     MissingParameter(&'static str),
     #[error(
@@ -156,9 +168,7 @@ impl AuthorizationQueryParsingError {
     fn standard_error_text(&self) -> &'static str {
         match self {
             Self::UnsupportedResponseType => "unsupported_response_type",
-            Self::MissingParameter(_) | Self::RepeatedParameter(_) | Self::ParsingError(_) => {
-                "invalid_request"
-            }
+            Self::MissingParameter(_) | Self::ParsingError(_) => "invalid_request",
             Self::InvalidScope(_) => "invalid_scope",
             Self::InvalidUri => "server_error",
         }
@@ -197,134 +207,46 @@ impl std::str::FromStr for AuthorizationRequestQuery {
         use AuthorizationQueryParams as Params;
         use AuthorizationQueryParsingError as Error;
 
-        #[derive(Debug)]
-        enum OptionUndefined<T> {
-            Some(T),
-            None,
-            Undefined,
+        let (opaque_parameters, result) = parsing::parse_query::<Params, Error>(query)?;
+
+        #[derive(Default, Debug)]
+        struct OptionalSelf {
+            response_type: Option<String>,
+            client_id: Option<String>,
+            redirect_uri: Option<String>,
+            scope: Option<String>,
+            state: Option<String>,
         }
 
-        impl<T> OptionUndefined<T> {
-            fn to_option(self) -> Option<T> {
-                match self {
-                    Self::Some(v) => Some(v),
-                    Self::None | Self::Undefined => None,
-                }
-            }
-        }
-
-        impl OptionUndefined<String> {
-            fn try_define(
-                self,
-                value: String,
-                param_name: &'static str,
-            ) -> std::result::Result<Self, Error> {
-                match self {
-                    Self::Some(_) | Self::None => Err(Error::RepeatedParameter(param_name)),
-                    Self::Undefined => {
-                        if value != "" {
-                            Ok(Self::Some(value))
-                        } else {
-                            Ok(Self::None)
-                        }
-                    }
-                }
-            }
-        }
-
-        impl OptionUndefined<Vec<Scope>> {
-            fn try_define(self, value: String) -> std::result::Result<Self, Error> {
-                match self {
-                    Self::Some(_) | Self::None => {
-                        Err(Error::RepeatedParameter(Params::Scope.name()))
-                    }
-                    Self::Undefined => {
-                        if value == "" {
-                            Ok(Self::None)
-                        } else {
-                            Ok(Self::Some(
-                                value
-                                    .split(' ')
-                                    .map(Scope::try_from)
-                                    .collect::<Result<Vec<Scope>, Error>>()?,
-                            ))
-                        }
-                    }
-                }
-            }
-        }
-
-        impl OptionUndefined<Uri> {
-            fn try_define(self, value: String) -> std::result::Result<Self, Error> {
-                match self {
-                    Self::Some(_) | Self::None => {
-                        Err(Error::RepeatedParameter(Params::RedirectUri.name()))
-                    }
-                    Self::Undefined => {
-                        if value == "" {
-                            Ok(Self::None)
-                        } else {
-                            Ok(Self::Some(
-                                value.parse::<Uri>().map_err(|_| Error::InvalidUri)?,
-                            ))
-                        }
-                    }
-                }
-            }
-        }
-
-        let parameters =
-            serde_urlencoded::from_str(query).map_err(|err| Error::ParsingError(err))?;
-
-        let (opaque_parameters, non_opaque_parameters) =
-            extract_opaque_parameters::<Params>(parameters);
-
-        let mut response_type: OptionUndefined<ResponseType> = OptionUndefined::Undefined;
-        let mut client_id: OptionUndefined<ClientId> = OptionUndefined::Undefined;
-        let mut redirect_uri: OptionUndefined<RedirectUri> = OptionUndefined::Undefined;
-        let mut scope: OptionUndefined<ScopeList> = OptionUndefined::Undefined;
-        let mut state: OptionUndefined<State> = OptionUndefined::Undefined;
-
-        for (param, value) in non_opaque_parameters {
-            match param {
-                Params::ResponseType => {
-                    response_type = response_type.try_define(value, param.name())?;
-                }
-                Params::ClientId => {
-                    client_id = client_id.try_define(value, param.name())?;
-                }
-                Params::RedirectUri => {
-                    redirect_uri = redirect_uri.try_define(value)?;
-                }
-                Params::Scope => {
-                    scope = scope.try_define(value)?;
-                }
-                Params::State => {
-                    state = state.try_define(value, param.name())?;
-                }
-            }
-        }
-
-        tracing::trace!(
-            concat!(
-                "Finished parsing query: {{\n",
-                "   opaque_parameters: {:?},\n",
-                "   response_type: {:?},\n",
-                "   client_id: {:?},\n",
-                "   redirect_uri: {:?},\n",
-                "   scope: {:?},\n",
-                "   state: {:?},\n",
-                "}}"
-            ),
-            opaque_parameters,
-            response_type,
-            client_id,
-            redirect_uri,
-            scope,
-            state
+        let optional_self = result.into_iter().fold(
+            OptionalSelf::default(),
+            |optional_self, (variant, optional_param)| match variant {
+                Params::ResponseType => OptionalSelf {
+                    response_type: optional_param,
+                    ..optional_self
+                },
+                Params::ClientId => OptionalSelf {
+                    client_id: optional_param,
+                    ..optional_self
+                },
+                Params::RedirectUri => OptionalSelf {
+                    redirect_uri: optional_param,
+                    ..optional_self
+                },
+                Params::Scope => OptionalSelf {
+                    scope: optional_param,
+                    ..optional_self
+                },
+                Params::State => OptionalSelf {
+                    state: optional_param,
+                    ..optional_self
+                },
+            },
         );
 
-        match response_type.to_option() {
+        tracing::trace!("Finished parsing query: {:?}", optional_self);
+
+        match optional_self.response_type {
             None => return Err(Error::MissingParameter(Params::ResponseType.name())),
             Some(s) if s != "code" => {
                 return Err(Error::UnsupportedResponseType);
@@ -333,22 +255,30 @@ impl std::str::FromStr for AuthorizationRequestQuery {
             _ => {}
         }
 
-        let client_id = match client_id.to_option() {
+        let client_id = match optional_self.client_id {
             Some(client_id) => client_id,
             None => return Err(Error::MissingParameter(Params::ClientId.name())),
         };
 
-        let redirect_uri = match redirect_uri.to_option() {
+        let redirect_uri = match optional_self.redirect_uri {
             Some(redirect_uri) => redirect_uri,
             None => return Err(Error::MissingParameter(Params::RedirectUri.name())),
         };
+        let redirect_uri = Uri::from_str(&redirect_uri).map_err(|_err| Error::InvalidUri)?;
+
+        let scope = optional_self
+            .scope
+            .unwrap_or_default()
+            .split(' ')
+            .map(Scope::try_from)
+            .collect::<Result<_, _>>()?;
 
         let result = AuthorizationRequestQuery {
             opaque_parameters,
             client_id,
             redirect_uri,
-            scope: scope.to_option().unwrap_or_default(),
-            state: state.to_option(),
+            scope: scope,
+            state: optional_self.state,
         };
 
         tracing::trace!("Resulted in: {:?}", result);

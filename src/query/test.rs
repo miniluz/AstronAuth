@@ -1,5 +1,7 @@
 use poem::http::Uri;
 
+use crate::query::parsing::ParsingError;
+
 use super::{
     AuthorizationQueryParams as Params, AuthorizationQueryParsingError as Error,
     AuthorizationRequestQuery, QueryParams,
@@ -188,7 +190,9 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_response_type),
-        Err(Error::RepeatedParameter(Params::ResponseType.name()))
+        Err(Error::ParsingError(ParsingError::RepeatedParameter(
+            Params::ResponseType.name()
+        )))
     );
 
     let repeated_client_id = serde_urlencoded::to_string([
@@ -203,7 +207,9 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_client_id),
-        Err(Error::RepeatedParameter(Params::ClientId.name()))
+        Err(Error::ParsingError(ParsingError::RepeatedParameter(
+            Params::ClientId.name()
+        )))
     );
 
     let repeated_redirect_uri = serde_urlencoded::to_string([
@@ -218,7 +224,9 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_redirect_uri),
-        Err(Error::RepeatedParameter(Params::RedirectUri.name()))
+        Err(Error::ParsingError(ParsingError::RepeatedParameter(
+            Params::RedirectUri.name()
+        )))
     );
 
     let repeated_scope = serde_urlencoded::to_string([
@@ -233,7 +241,9 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_scope),
-        Err(Error::RepeatedParameter(Params::Scope.name()))
+        Err(Error::ParsingError(ParsingError::RepeatedParameter(
+            Params::Scope.name()
+        )))
     );
 
     let repeated_state = serde_urlencoded::to_string([
@@ -248,7 +258,9 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_state),
-        Err(Error::RepeatedParameter(Params::State.name()))
+        Err(Error::ParsingError(ParsingError::RepeatedParameter(
+            Params::State.name()
+        )))
     );
 }
 
