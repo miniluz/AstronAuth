@@ -5,19 +5,23 @@ use poem::{
     http::{StatusCode, Uri},
     FromRequest, Request, Response,
 };
+use poem_openapi::{ApiExtractor, ApiExtractorType};
 use serde::Deserialize;
 use tracing::instrument;
+
+#[cfg(test)]
+mod test;
+
+mod opaque_parameters;
+mod redirect_uri;
+mod response_type;
+mod scope;
 
 use self::{opaque_parameters::OpaqueParameters, redirect_uri::RedirectUri};
 use self::{
     response_type::ResponseType,
     scope::{Scope, ScopeList},
 };
-
-#[cfg(test)]
-mod test;
-
-mod opaque_parameters;
 
 #[derive(Debug, PartialEq)]
 enum AuthorizationQueryParams {
