@@ -103,6 +103,7 @@ dependencies = [
  "itertools",
  "poem",
  "poem-openapi",
+ "serde",
  "serde_urlencoded",
  "sqlx",
  "thiserror",

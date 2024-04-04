@@ -1,30 +1,20 @@
 //! This module is necessary to handle the requirements the RFC has for preserving the query
 
-use itertools::{Either, Itertools};
+use itertools::Itertools;
 use poem::{
     error::ResponseError,
     http::{StatusCode, Uri},
     FromRequest, Request, Response,
 };
+use serde::Deserialize;
 use tracing::instrument;
+
+use self::opaque_parameters::OpaqueParameters;
 
 #[cfg(test)]
 mod test;
 
-mod parsing;
-
-trait QueryParams: std::str::FromStr {
-    fn name(&self) -> &'static str;
-    fn names() -> &'static [&'static str];
-    fn variants() -> &'static [Self];
-
-    fn split(key_value: (String, String)) -> Either<(String, String), (Self, String)> {
-        match (&*key_value.0).parse::<Self>() {
-            Err(_) => Either::Left((key_value.0, key_value.1)),
-            Ok(param) => Either::Right((param, key_value.1)),
-        }
-    }
-}
+mod opaque_parameters;
 
 #[derive(Debug, PartialEq)]
 enum AuthorizationQueryParams {
@@ -35,22 +25,7 @@ enum AuthorizationQueryParams {
     State,
 }
 
-impl std::str::FromStr for AuthorizationQueryParams {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "response_type" => Ok(Self::ResponseType),
-            "client_id" => Ok(Self::ClientId),
-            "redirect_uri" => Ok(Self::RedirectUri),
-            "scope" => Ok(Self::Scope),
-            "state" => Ok(Self::State),
-            _ => Err(()),
-        }
-    }
-}
-
-impl QueryParams for AuthorizationQueryParams {
+impl AuthorizationQueryParams {
     fn name(&self) -> &'static str {
         match self {
             Self::ResponseType => "response_type",
@@ -60,32 +35,10 @@ impl QueryParams for AuthorizationQueryParams {
             Self::State => "state",
         }
     }
-
-    fn names() -> &'static [&'static str] {
-        &[
-            "response_type",
-            "client_id",
-            "redirect_uri",
-            "scope",
-            "state",
-        ]
-    }
-
-    fn variants() -> &'static [Self] {
-        &[
-            Self::ResponseType,
-            Self::ClientId,
-            Self::RedirectUri,
-            Self::Scope,
-            Self::State,
-        ]
-    }
 }
 
-pub type ResponseType = String;
 pub type ClientId = String;
 pub type RedirectUri = Uri;
-pub type ScopeList = Vec<Scope>;
 pub type State = String;
 
 /// A scope is a valid scope according to
@@ -93,10 +46,24 @@ pub type State = String;
 /// of the RFC
 #[derive(PartialEq, Eq)]
 pub struct Scope(String);
+#[derive(Debug, PartialEq, Eq)]
+pub struct ScopeList(pub Vec<Scope>);
 
 impl std::fmt::Debug for Scope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+impl From<Scope> for String {
+    fn from(scope: Scope) -> Self {
+        scope.0
+    }
+}
+
+impl From<ScopeList> for String {
+    fn from(scope_list: ScopeList) -> String {
+        scope_list.0.into_iter().map(|scope| scope.0).join(" ")
     }
 }
 
@@ -120,27 +87,23 @@ impl TryFrom<&str> for Scope {
     }
 }
 
-impl Into<String> for Scope {
-    fn into(self) -> String {
-        self.0
-    }
-}
+impl TryFrom<&str> for ScopeList {
+    type Error = AuthorizationQueryParsingError;
 
-/// Extracs all params not contained in non_opaque_keys.
-/// Returns (opaque_parameters, remaining_parameters)
-fn extract_opaque_parameters<T: QueryParams>(
-    parameters: Vec<(String, String)>,
-) -> (Vec<(String, String)>, Vec<(T, String)>) {
-    return parameters
-        .into_iter()
-        .partition_map(|key_value| T::split(key_value));
+    fn try_from(values: &str) -> Result<Self, Self::Error> {
+        values
+            .split(' ')
+            .map(Scope::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map(|list| ScopeList(list))
+    }
 }
 
 /// Represents the authorization request query.
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthorizationRequestQuery {
     /// All the parameters that aren't client, redirect_uri, scope and state are preserved as-is.
-    opaque_parameters: Vec<(String, String)>,
+    opaque_parameters: OpaqueParameters,
     pub client_id: ClientId,
     pub redirect_uri: RedirectUri,
     pub scope: ScopeList,
@@ -152,8 +115,10 @@ pub struct AuthorizationRequestQuery {
 pub enum AuthorizationQueryParsingError {
     #[error("only the \"code\" response_type is supported")]
     UnsupportedResponseType,
-    #[error("{0}")]
-    ParsingError(#[from] parsing::ParsingError),
+    #[error("the query is not in urlencoded format")]
+    ParsingError,
+    #[error("repeated parameter")]
+    RepeatedParameter,
     #[error("missing parameter {0:?}")]
     MissingParameter(&'static str),
     #[error(
@@ -168,7 +133,9 @@ impl AuthorizationQueryParsingError {
     fn standard_error_text(&self) -> &'static str {
         match self {
             Self::UnsupportedResponseType => "unsupported_response_type",
-            Self::MissingParameter(_) | Self::ParsingError(_) => "invalid_request",
+            Self::MissingParameter(_) | Self::RepeatedParameter | Self::ParsingError => {
+                "invalid_request"
+            }
             Self::InvalidScope(_) => "invalid_scope",
             Self::InvalidUri => "server_error",
         }
@@ -207,46 +174,49 @@ impl std::str::FromStr for AuthorizationRequestQuery {
         use AuthorizationQueryParams as Params;
         use AuthorizationQueryParsingError as Error;
 
-        let (opaque_parameters, result) = parsing::parse_query::<Params, Error>(query)?;
-
-        #[derive(Default, Debug)]
-        struct OptionalSelf {
+        #[derive(Debug, Deserialize)]
+        struct DeserializableSelf {
             response_type: Option<String>,
             client_id: Option<String>,
             redirect_uri: Option<String>,
             scope: Option<String>,
             state: Option<String>,
+            #[serde(flatten)]
+            opaque_parameters: OpaqueParameters,
         }
 
-        let optional_self = result.into_iter().fold(
-            OptionalSelf::default(),
-            |optional_self, (variant, optional_param)| match variant {
-                Params::ResponseType => OptionalSelf {
-                    response_type: optional_param,
-                    ..optional_self
-                },
-                Params::ClientId => OptionalSelf {
-                    client_id: optional_param,
-                    ..optional_self
-                },
-                Params::RedirectUri => OptionalSelf {
-                    redirect_uri: optional_param,
-                    ..optional_self
-                },
-                Params::Scope => OptionalSelf {
-                    scope: optional_param,
-                    ..optional_self
-                },
-                Params::State => OptionalSelf {
-                    state: optional_param,
-                    ..optional_self
-                },
-            },
-        );
+        impl DeserializableSelf {
+            fn empty_to_none(self) -> Self {
+                fn empty_to_none(option: Option<String>) -> Option<String> {
+                    option.and_then(|s| if s == "" { None } else { Some(s) })
+                }
+                DeserializableSelf {
+                    response_type: empty_to_none(self.response_type),
+                    client_id: empty_to_none(self.client_id),
+                    redirect_uri: empty_to_none(self.redirect_uri),
+                    scope: empty_to_none(self.scope),
+                    state: empty_to_none(self.state),
+                    opaque_parameters: self.opaque_parameters,
+                }
+            }
+        }
 
-        tracing::trace!("Finished parsing query: {:?}", optional_self);
+        let deserializable_self = match serde_urlencoded::from_str::<DeserializableSelf>(query) {
+            Ok(deserializable_self) => deserializable_self,
+            Err(error) => {
+                let error = if error.to_string().starts_with("duplicate field") {
+                    Error::RepeatedParameter
+                } else {
+                    Error::ParsingError
+                };
+                return Err(error);
+            }
+        }
+        .empty_to_none();
 
-        match optional_self.response_type {
+        tracing::trace!("Finished parsing query: {:?}", deserializable_self);
+
+        match deserializable_self.response_type {
             None => return Err(Error::MissingParameter(Params::ResponseType.name())),
             Some(s) if s != "code" => {
                 return Err(Error::UnsupportedResponseType);
@@ -255,30 +225,25 @@ impl std::str::FromStr for AuthorizationRequestQuery {
             _ => {}
         }
 
-        let client_id = match optional_self.client_id {
+        let client_id = match deserializable_self.client_id {
             Some(client_id) => client_id,
             None => return Err(Error::MissingParameter(Params::ClientId.name())),
         };
 
-        let redirect_uri = match optional_self.redirect_uri {
+        let redirect_uri = match deserializable_self.redirect_uri {
             Some(redirect_uri) => redirect_uri,
             None => return Err(Error::MissingParameter(Params::RedirectUri.name())),
         };
         let redirect_uri = Uri::from_str(&redirect_uri).map_err(|_err| Error::InvalidUri)?;
 
-        let scope = optional_self
-            .scope
-            .unwrap_or_default()
-            .split(' ')
-            .map(Scope::try_from)
-            .collect::<Result<_, _>>()?;
+        let scope = ScopeList::try_from(&deserializable_self.scope.unwrap_or_default() as &str)?;
 
         let result = AuthorizationRequestQuery {
-            opaque_parameters,
+            opaque_parameters: deserializable_self.opaque_parameters,
             client_id,
             redirect_uri,
-            scope: scope,
-            state: optional_self.state,
+            scope,
+            state: deserializable_self.state,
         };
 
         tracing::trace!("Resulted in: {:?}", result);

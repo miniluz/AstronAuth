@@ -1,10 +1,8 @@
 use poem::http::Uri;
 
-use crate::query::parsing::ParsingError;
-
 use super::{
-    AuthorizationQueryParams as Params, AuthorizationQueryParsingError as Error,
-    AuthorizationRequestQuery, QueryParams,
+    opaque_parameters::OpaqueParameters, AuthorizationQueryParams as Params,
+    AuthorizationQueryParsingError as Error, AuthorizationRequestQuery, ScopeList,
 };
 
 fn parse_authorization_query(query: &str) -> Result<AuthorizationRequestQuery, Error> {
@@ -22,10 +20,13 @@ fn trivial_query() {
     .unwrap();
 
     let trivial_auth_query = AuthorizationRequestQuery {
-        opaque_parameters: vec![],
+        opaque_parameters: OpaqueParameters(vec![]),
         client_id: "valid_client_id".to_owned(),
         redirect_uri: Uri::from_static("https://example.org/foo/bar?hey=now&test"),
-        scope: vec!["scope_a".try_into().unwrap(), "scope_b".try_into().unwrap()],
+        scope: ScopeList(vec![
+            "scope_a".try_into().unwrap(),
+            "scope_b".try_into().unwrap(),
+        ]),
         state: None,
     };
 
@@ -157,16 +158,19 @@ fn ignore_opaque_parameters() {
     .unwrap();
 
     let repeated_opaque_params_query = AuthorizationRequestQuery {
-        opaque_parameters: vec![
+        opaque_parameters: OpaqueParameters(vec![
             ("repeated1".to_owned(), "hey".to_owned()),
             ("repeated1".to_owned(), "".to_owned()),
             ("repeated2".to_owned(), "once".to_owned()),
             ("repeated2".to_owned(), "twice".to_owned()),
             ("repeated2".to_owned(), "thrice".to_owned()),
-        ],
+        ]),
         client_id: "valid_client_id".to_owned(),
         redirect_uri: Uri::from_static("https://example.org/foo/bar?hey=now&test"),
-        scope: vec!["scope_a".try_into().unwrap(), "scope_b".try_into().unwrap()],
+        scope: ScopeList(vec![
+            "scope_a".try_into().unwrap(),
+            "scope_b".try_into().unwrap(),
+        ]),
         state: None,
     };
 
@@ -190,9 +194,7 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_response_type),
-        Err(Error::ParsingError(ParsingError::RepeatedParameter(
-            Params::ResponseType.name()
-        )))
+        Err(Error::RepeatedParameter)
     );
 
     let repeated_client_id = serde_urlencoded::to_string([
@@ -207,9 +209,7 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_client_id),
-        Err(Error::ParsingError(ParsingError::RepeatedParameter(
-            Params::ClientId.name()
-        )))
+        Err(Error::RepeatedParameter)
     );
 
     let repeated_redirect_uri = serde_urlencoded::to_string([
@@ -224,9 +224,7 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_redirect_uri),
-        Err(Error::ParsingError(ParsingError::RepeatedParameter(
-            Params::RedirectUri.name()
-        )))
+        Err(Error::RepeatedParameter)
     );
 
     let repeated_scope = serde_urlencoded::to_string([
@@ -241,9 +239,7 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_scope),
-        Err(Error::ParsingError(ParsingError::RepeatedParameter(
-            Params::Scope.name()
-        )))
+        Err(Error::RepeatedParameter)
     );
 
     let repeated_state = serde_urlencoded::to_string([
@@ -258,9 +254,7 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_state),
-        Err(Error::ParsingError(ParsingError::RepeatedParameter(
-            Params::State.name()
-        )))
+        Err(Error::RepeatedParameter)
     );
 }
 
