@@ -2,7 +2,8 @@ use std::fmt;
 
 use serde::{
     de::{MapAccess, Visitor},
-    Deserialize, Deserializer,
+    ser::SerializeMap,
+    Deserialize, Deserializer, Serialize, Serializer,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -41,5 +42,18 @@ impl<'de> Deserialize<'de> for OpaqueParameters {
         // Instantiate our Visitor and ask the Deserializer to drive
         // it over the input data, resulting in an instance of MyMap.
         deserializer.deserialize_map(OpaqueParametersVisitor)
+    }
+}
+
+impl Serialize for OpaqueParameters {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (k, v) in self.0.iter() {
+            map.serialize_entry(k, v)?;
+        }
+        map.end()
     }
 }

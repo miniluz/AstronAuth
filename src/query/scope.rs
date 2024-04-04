@@ -1,6 +1,5 @@
 use itertools::Itertools;
 
-use super::AuthorizationQueryParsingError;
 /// A scope is a valid scope according to
 /// [section 3.3](https://datatracker.ietf.org/doc/html/rfc6749#section-3.3)
 /// of the RFC
@@ -31,12 +30,15 @@ impl From<ScopeList> for String {
     }
 }
 
+#[derive(Debug)]
+pub struct InvalidScope(pub String);
+
 impl TryFrom<&str> for Scope {
-    type Error = AuthorizationQueryParsingError;
+    type Error = InvalidScope;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         if value.len() == 0 {
-            return Err(Self::Error::InvalidScope(value.to_owned()));
+            return Err(InvalidScope(value.to_owned()));
         }
 
         let all_valid = value.as_bytes().iter().all(|char| {
@@ -44,7 +46,7 @@ impl TryFrom<&str> for Scope {
         });
 
         if !(all_valid) {
-            return Err(Self::Error::InvalidScope(value.to_owned()));
+            return Err(InvalidScope(value.to_owned()));
         }
 
         Ok(Self(value.to_owned()))
@@ -52,7 +54,7 @@ impl TryFrom<&str> for Scope {
 }
 
 impl TryFrom<&str> for ScopeList {
-    type Error = AuthorizationQueryParsingError;
+    type Error = InvalidScope;
 
     fn try_from(values: &str) -> Result<Self, Self::Error> {
         values

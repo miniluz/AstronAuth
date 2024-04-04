@@ -1,5 +1,4 @@
-use poem::{listener::TcpListener, Route, Server};
-use poem_openapi::OpenApiService;
+use axum::{routing, Router};
 
 mod api;
 mod query;
@@ -16,15 +15,12 @@ async fn main() -> color_eyre::eyre::Result<()> {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    // Start server
-    let api_service =
-        OpenApiService::new(api::Api, "Hello World", "1.0").server("http://localhost:3000");
-    let ui = api_service.openapi_explorer();
-    let app = Route::new().nest("/", api_service).nest("/docs", ui);
+    let app = Router::new().route("/", routing::get(api::index));
 
-    Server::new(TcpListener::bind("127.0.0.1:3000"))
-        .run(app)
-        .await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+        .await
+        .unwrap();
+    axum::serve(listener, app).await.unwrap();
 
     Ok(())
 }

@@ -1,13 +1,11 @@
 //! This module is necessary to handle the requirements the RFC has for preserving the query
 
-use poem::{
-    error::ResponseError,
-    http::{StatusCode, Uri},
-    FromRequest, Request, Response,
-};
-use poem_openapi::{ApiExtractor, ApiExtractorType};
+use axum::extract::{FromRequest, Request};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use tracing::instrument;
+use url::Url;
 
 #[cfg(test)]
 mod test;
@@ -18,10 +16,7 @@ mod response_type;
 mod scope;
 
 use self::{opaque_parameters::OpaqueParameters, redirect_uri::RedirectUri};
-use self::{
-    response_type::ResponseType,
-    scope::{Scope, ScopeList},
-};
+use self::{response_type::ResponseType, scope::ScopeList};
 
 #[derive(Debug, PartialEq)]
 enum AuthorizationQueryParams {
@@ -47,111 +42,6 @@ impl AuthorizationQueryParams {
 pub type ClientId = String;
 pub type State = String;
 
-mod scope {
-    use itertools::Itertools;
-
-    use super::AuthorizationQueryParsingError;
-    /// A scope is a valid scope according to
-    /// [section 3.3](https://datatracker.ietf.org/doc/html/rfc6749#section-3.3)
-    /// of the RFC
-    #[derive(PartialEq, Eq)]
-    pub struct Scope(String);
-    #[derive(Debug, PartialEq, Eq)]
-    pub struct ScopeList(pub Vec<Scope>);
-
-    impl std::fmt::Debug for Scope {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(&self.0)
-        }
-    }
-
-    impl From<Scope> for String {
-        fn from(scope: Scope) -> Self {
-            scope.0
-        }
-    }
-
-    impl From<ScopeList> for String {
-        fn from(scope_list: ScopeList) -> String {
-            scope_list
-                .0
-                .into_iter()
-                .map(|scope| String::from(scope))
-                .join(" ")
-        }
-    }
-
-    impl TryFrom<&str> for Scope {
-        type Error = AuthorizationQueryParsingError;
-
-        fn try_from(value: &str) -> Result<Self, Self::Error> {
-            if value.len() == 0 {
-                return Err(Self::Error::InvalidScope(value.to_owned()));
-            }
-
-            let all_valid = value.as_bytes().iter().all(|char| {
-                *char == 0x21 || (0x23..=0x5B).contains(char) || (0x5D..=0x7E).contains(char)
-            });
-
-            if !(all_valid) {
-                return Err(Self::Error::InvalidScope(value.to_owned()));
-            }
-
-            Ok(Self(value.to_owned()))
-        }
-    }
-
-    impl TryFrom<&str> for ScopeList {
-        type Error = AuthorizationQueryParsingError;
-
-        fn try_from(values: &str) -> Result<Self, Self::Error> {
-            values
-                .split(' ')
-                .map(Scope::try_from)
-                .collect::<Result<Vec<_>, _>>()
-                .map(|list| ScopeList(list))
-        }
-    }
-}
-
-mod redirect_uri {
-    use std::convert::Infallible;
-
-    use poem::http::Uri;
-
-    #[derive(Debug, PartialEq, Eq)]
-    pub struct RedirectUri(Uri);
-
-    impl RedirectUri {
-        pub fn new(uri: Uri) -> Result<Self, Infallible> {
-            // TODO: Validate
-            Ok(Self(uri))
-        }
-
-        pub fn get(&self) -> &Uri {
-            &self.0
-        }
-    }
-}
-
-mod response_type {
-    use super::AuthorizationQueryParsingError;
-
-    #[non_exhaustive]
-    #[derive(Debug, PartialEq, Eq)]
-    pub struct ResponseType;
-
-    impl ResponseType {
-        pub fn new(response_type: &str) -> Result<Self, AuthorizationQueryParsingError> {
-            if response_type == "code" {
-                Ok(Self)
-            } else {
-                Err(AuthorizationQueryParsingError::UnsupportedResponseType)
-            }
-        }
-    }
-}
-
 /// Represents the authorization request query.
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthorizationRequestQuery {
@@ -168,17 +58,17 @@ pub struct AuthorizationRequestQuery {
 #[error("authorization query parsing error")]
 pub enum AuthorizationQueryParsingError {
     #[error("only the \"code\" response_type is supported")]
-    UnsupportedResponseType,
+    UnsupportedResponseType(RedirectUri),
     #[error("the query is not in urlencoded format")]
-    ParsingError,
+    ParsingError(RedirectUri),
     #[error("repeated parameter")]
-    RepeatedParameter,
+    RepeatedParameter(RedirectUri),
     #[error("missing parameter {0:?}")]
-    MissingParameter(&'static str),
+    MissingParameter(&'static str, RedirectUri),
     #[error(
         "invalid scope format on `{0:?}`. check section 3.3 of RFC 6749 for the allowed characters"
     )]
-    InvalidScope(String),
+    InvalidScope(String, RedirectUri),
     #[error("the redirect_uri is invalid")]
     InvalidUri,
 }
@@ -186,38 +76,51 @@ pub enum AuthorizationQueryParsingError {
 impl AuthorizationQueryParsingError {
     fn standard_error_text(&self) -> &'static str {
         match self {
-            Self::UnsupportedResponseType => "unsupported_response_type",
-            Self::MissingParameter(_) | Self::RepeatedParameter | Self::ParsingError => {
+            Self::UnsupportedResponseType(_) => "unsupported_response_type",
+            Self::MissingParameter(_, _) | Self::RepeatedParameter(_) | Self::ParsingError(_) => {
                 "invalid_request"
             }
-            Self::InvalidScope(_) => "invalid_scope",
+            Self::InvalidScope(_, _) => "invalid_scope",
             Self::InvalidUri => "server_error",
         }
     }
 }
 
-impl ResponseError for AuthorizationQueryParsingError {
-    // TODO: Implement actual statuses
-    fn status(&self) -> StatusCode {
+impl IntoResponse for AuthorizationQueryParsingError {
+    fn into_response(self) -> Response {
+        let standard_error_text = self.standard_error_text();
+        let error_text = self.to_string();
         match self {
-            Self::MissingParameter(param)
-                if *param == AuthorizationQueryParams::RedirectUri.name() =>
-            {
-                StatusCode::BAD_REQUEST
-            }
-            Self::InvalidUri => StatusCode::BAD_REQUEST,
-            _ => StatusCode::SEE_OTHER,
-        }
-    }
+            Self::InvalidUri => (StatusCode::BAD_REQUEST, error_text).into_response(),
+            Self::UnsupportedResponseType(redirect_uri)
+            | Self::InvalidScope(_, redirect_uri)
+            | Self::MissingParameter(_, redirect_uri)
+            | Self::ParsingError(redirect_uri)
+            | Self::RepeatedParameter(redirect_uri) => {
+                let mut query: Vec<(String, String)> = match serde_urlencoded::from_str(
+                    redirect_uri.get().query().unwrap_or_default(),
+                ) {
+                    Ok(vec) => vec,
+                    Err(_) => return (StatusCode::BAD_REQUEST, error_text).into_response(),
+                };
+                query.push(("error".to_owned(), standard_error_text.to_owned()));
 
-    fn as_response(&self) -> Response {
-        let status = self.status();
-        let response_builder = Response::builder().status(status);
-        let response_builder = match status {
-            StatusCode::SEE_OTHER => response_builder.header("Location", "todo"),
-            StatusCode::BAD_REQUEST | _ => response_builder,
-        };
-        response_builder.body(self.to_string())
+                let query = match serde_urlencoded::to_string(query) {
+                    Ok(str) => str,
+                    Err(_) => return (StatusCode::BAD_REQUEST, error_text).into_response(),
+                };
+
+                let mut redirect_uri = redirect_uri.get().clone();
+                redirect_uri.set_query(Some(&query));
+
+                (
+                    StatusCode::SEE_OTHER,
+                    [("Location", redirect_uri.to_string())],
+                    error_text,
+                )
+                    .into_response()
+            }
+        }
     }
 }
 
@@ -236,7 +139,7 @@ impl std::str::FromStr for AuthorizationRequestQuery {
             .map_err(|_| Error::InvalidUri)?
             .redirect_uri;
 
-        let redirect_uri = Uri::from_str(&redirect_uri).map_err(|_| Error::InvalidUri)?;
+        let redirect_uri = Url::parse(&redirect_uri).map_err(|_| Error::InvalidUri)?;
         let redirect_uri = RedirectUri::new(redirect_uri).map_err(|_| Error::InvalidUri)?;
 
         // All logic for rejecting URIs must go ABOVE HERE and must return InvalidUri.
@@ -272,9 +175,9 @@ impl std::str::FromStr for AuthorizationRequestQuery {
             Ok(deserializable_self) => deserializable_self,
             Err(error) => {
                 let error = if error.to_string().starts_with("duplicate field") {
-                    Error::RepeatedParameter
+                    Error::RepeatedParameter(redirect_uri)
                 } else {
-                    Error::ParsingError
+                    Error::ParsingError(redirect_uri)
                 };
                 return Err(error);
             }
@@ -283,17 +186,22 @@ impl std::str::FromStr for AuthorizationRequestQuery {
 
         tracing::trace!("Finished parsing query: {:?}", deserializable_self);
 
-        let response_type = ResponseType::new(
-            &deserializable_self
-                .response_type
-                .ok_or(Error::MissingParameter(Params::ResponseType.name()))?,
-        )?;
+        let response_type = ResponseType::new(&deserializable_self.response_type.ok_or(
+            Error::MissingParameter(Params::ResponseType.name(), redirect_uri.clone()),
+        )?)
+        .map_err(|_unsupported_response_type| {
+            Error::UnsupportedResponseType(redirect_uri.clone())
+        })?;
 
         let client_id = deserializable_self
             .client_id
-            .ok_or(Error::MissingParameter(Params::ClientId.name()))?;
+            .ok_or(Error::MissingParameter(
+                Params::ClientId.name(),
+                redirect_uri.clone(),
+            ))?;
 
-        let scope = ScopeList::try_from(&deserializable_self.scope.unwrap_or_default() as &str)?;
+        let scope = ScopeList::try_from(&deserializable_self.scope.unwrap_or_default() as &str)
+            .map_err(|invalid_scope| Error::InvalidScope(invalid_scope.0, redirect_uri.clone()))?;
 
         let result = AuthorizationRequestQuery {
             opaque_parameters: deserializable_self.opaque_parameters,
@@ -314,7 +222,7 @@ impl std::str::FromStr for AuthorizationRequestQuery {
 impl AuthorizationRequestQuery {
     /// Simply maps to `Self::try_from_query`
     #[instrument(name = "parse_authorization_query", skip_all)]
-    async fn internal_from_request(req: &Request) -> Result<Self, AuthorizationQueryParsingError> {
+    async fn internal_from_request(req: Request) -> Result<Self, AuthorizationQueryParsingError> {
         // this string will be percent-encoded. we'll have to decode it!
         let query = req.uri().query().unwrap_or_default();
 
@@ -328,9 +236,42 @@ impl AuthorizationRequestQuery {
     }
 }
 
-impl<'a> FromRequest<'a> for AuthorizationRequestQuery {
+#[async_trait::async_trait]
+impl<S> FromRequest<S> for AuthorizationRequestQuery
+where
+    S: Send + Sync,
+{
+    type Rejection = AuthorizationQueryParsingError;
     /// Simply maps to `Self::internal_from_request`
-    async fn from_request(req: &'a Request, _body: &mut poem::RequestBody) -> poem::Result<Self> {
+    async fn from_request(req: Request, _state: &S) -> Result<Self, Self::Rejection> {
         Self::internal_from_request(req).await.map_err(Into::into)
     }
 }
+
+// use poem_openapi::registry::{MetaSchema, MetaSchemaRef};
+//
+// impl<'a> ApiExtractor<'a> for AuthorizationRequestQuery {
+//     const TYPES: &'static [ApiExtractorType] = &[ApiExtractorType::Parameter];
+//     const PARAM_IS_REQUIRED: bool = true;
+
+//     type ParamType = ();
+
+//     type ParamRawType = ();
+
+//     fn param_schema_ref() -> Option<MetaSchemaRef> {
+//         Some(MetaSchemaRef::Inline(Box::new(MetaSchema {
+//             parameters:
+//             ..MetaSchema::new("")
+//         })))
+//     }
+
+//     async fn from_request(
+//         request: &'a Request,
+//         _body: &mut poem::RequestBody,
+//         _param_opts: poem_openapi::ExtractParamOptions<Self::ParamType>,
+//     ) -> poem::Result<Self> {
+//         Self::internal_from_request(request)
+//             .await
+//             .map_err(Into::into)
+//     }
+// }
