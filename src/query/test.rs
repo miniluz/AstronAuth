@@ -1,8 +1,9 @@
 use poem::http::Uri;
 
 use super::{
-    opaque_parameters::OpaqueParameters, AuthorizationQueryParams as Params,
-    AuthorizationQueryParsingError as Error, AuthorizationRequestQuery, ScopeList,
+    opaque_parameters::OpaqueParameters, redirect_uri::RedirectUri, response_type::ResponseType,
+    AuthorizationQueryParams as Params, AuthorizationQueryParsingError as Error,
+    AuthorizationRequestQuery, ScopeList,
 };
 
 fn parse_authorization_query(query: &str) -> Result<AuthorizationRequestQuery, Error> {
@@ -21,8 +22,12 @@ fn trivial_query() {
 
     let trivial_auth_query = AuthorizationRequestQuery {
         opaque_parameters: OpaqueParameters(vec![]),
+        response_type: ResponseType::new("code").unwrap(),
         client_id: "valid_client_id".to_owned(),
-        redirect_uri: Uri::from_static("https://example.org/foo/bar?hey=now&test"),
+        redirect_uri: RedirectUri::new(Uri::from_static(
+            "https://example.org/foo/bar?hey=now&test",
+        ))
+        .unwrap(),
         scope: ScopeList(vec![
             "scope_a".try_into().unwrap(),
             "scope_b".try_into().unwrap(),
@@ -94,7 +99,7 @@ fn missing_parameters() {
 
     assert_eq!(
         parse_authorization_query(&missing_redirect_uri),
-        Err(Error::MissingParameter(Params::RedirectUri.name()))
+        Err(Error::InvalidUri)
     );
 
     let missing_redirect_uri = serde_urlencoded::to_string([
@@ -106,7 +111,7 @@ fn missing_parameters() {
 
     assert_eq!(
         parse_authorization_query(&missing_redirect_uri),
-        Err(Error::MissingParameter(Params::RedirectUri.name()))
+        Err(Error::InvalidUri)
     );
 }
 
@@ -165,8 +170,12 @@ fn ignore_opaque_parameters() {
             ("repeated2".to_owned(), "twice".to_owned()),
             ("repeated2".to_owned(), "thrice".to_owned()),
         ]),
+        response_type: ResponseType::new("code").unwrap(),
         client_id: "valid_client_id".to_owned(),
-        redirect_uri: Uri::from_static("https://example.org/foo/bar?hey=now&test"),
+        redirect_uri: RedirectUri::new(Uri::from_static(
+            "https://example.org/foo/bar?hey=now&test",
+        ))
+        .unwrap(),
         scope: ScopeList(vec![
             "scope_a".try_into().unwrap(),
             "scope_b".try_into().unwrap(),
@@ -224,7 +233,7 @@ fn repeated_parameters() {
 
     assert_eq!(
         parse_authorization_query(&repeated_redirect_uri),
-        Err(Error::RepeatedParameter)
+        Err(Error::InvalidUri)
     );
 
     let repeated_scope = serde_urlencoded::to_string([

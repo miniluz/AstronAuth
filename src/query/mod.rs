@@ -1,6 +1,5 @@
 //! This module is necessary to handle the requirements the RFC has for preserving the query
 
-use itertools::Itertools;
 use poem::{
     error::ResponseError,
     http::{StatusCode, Uri},
@@ -9,7 +8,11 @@ use poem::{
 use serde::Deserialize;
 use tracing::instrument;
 
-use self::opaque_parameters::OpaqueParameters;
+use self::{opaque_parameters::OpaqueParameters, redirect_uri::RedirectUri};
+use self::{
+    response_type::ResponseType,
+    scope::{Scope, ScopeList},
+};
 
 #[cfg(test)]
 mod test;
@@ -38,64 +41,110 @@ impl AuthorizationQueryParams {
 }
 
 pub type ClientId = String;
-pub type RedirectUri = Uri;
 pub type State = String;
 
-/// A scope is a valid scope according to
-/// [section 3.3](https://datatracker.ietf.org/doc/html/rfc6749#section-3.3)
-/// of the RFC
-#[derive(PartialEq, Eq)]
-pub struct Scope(String);
-#[derive(Debug, PartialEq, Eq)]
-pub struct ScopeList(pub Vec<Scope>);
+mod scope {
+    use itertools::Itertools;
 
-impl std::fmt::Debug for Scope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+    use super::AuthorizationQueryParsingError;
+    /// A scope is a valid scope according to
+    /// [section 3.3](https://datatracker.ietf.org/doc/html/rfc6749#section-3.3)
+    /// of the RFC
+    #[derive(PartialEq, Eq)]
+    pub struct Scope(String);
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct ScopeList(pub Vec<Scope>);
+
+    impl std::fmt::Debug for Scope {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    impl From<Scope> for String {
+        fn from(scope: Scope) -> Self {
+            scope.0
+        }
+    }
+
+    impl From<ScopeList> for String {
+        fn from(scope_list: ScopeList) -> String {
+            scope_list
+                .0
+                .into_iter()
+                .map(|scope| String::from(scope))
+                .join(" ")
+        }
+    }
+
+    impl TryFrom<&str> for Scope {
+        type Error = AuthorizationQueryParsingError;
+
+        fn try_from(value: &str) -> Result<Self, Self::Error> {
+            if value.len() == 0 {
+                return Err(Self::Error::InvalidScope(value.to_owned()));
+            }
+
+            let all_valid = value.as_bytes().iter().all(|char| {
+                *char == 0x21 || (0x23..=0x5B).contains(char) || (0x5D..=0x7E).contains(char)
+            });
+
+            if !(all_valid) {
+                return Err(Self::Error::InvalidScope(value.to_owned()));
+            }
+
+            Ok(Self(value.to_owned()))
+        }
+    }
+
+    impl TryFrom<&str> for ScopeList {
+        type Error = AuthorizationQueryParsingError;
+
+        fn try_from(values: &str) -> Result<Self, Self::Error> {
+            values
+                .split(' ')
+                .map(Scope::try_from)
+                .collect::<Result<Vec<_>, _>>()
+                .map(|list| ScopeList(list))
+        }
     }
 }
 
-impl From<Scope> for String {
-    fn from(scope: Scope) -> Self {
-        scope.0
-    }
-}
+mod redirect_uri {
+    use std::convert::Infallible;
 
-impl From<ScopeList> for String {
-    fn from(scope_list: ScopeList) -> String {
-        scope_list.0.into_iter().map(|scope| scope.0).join(" ")
-    }
-}
+    use poem::http::Uri;
 
-impl TryFrom<&str> for Scope {
-    type Error = AuthorizationQueryParsingError;
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct RedirectUri(Uri);
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        if value.len() == 0 {
-            return Err(Self::Error::InvalidScope(value.to_owned()));
+    impl RedirectUri {
+        pub fn new(uri: Uri) -> Result<Self, Infallible> {
+            // TODO: Validate
+            Ok(Self(uri))
         }
 
-        let all_valid = value.as_bytes().iter().all(|char| {
-            *char == 0x21 || (0x23..=0x5B).contains(char) || (0x5D..=0x7E).contains(char)
-        });
-
-        if !(all_valid) {
-            return Err(Self::Error::InvalidScope(value.to_owned()));
+        pub fn get(&self) -> &Uri {
+            &self.0
         }
-
-        Ok(Self(value.to_owned()))
     }
 }
 
-impl TryFrom<&str> for ScopeList {
-    type Error = AuthorizationQueryParsingError;
+mod response_type {
+    use super::AuthorizationQueryParsingError;
 
-    fn try_from(values: &str) -> Result<Self, Self::Error> {
-        values
-            .split(' ')
-            .map(Scope::try_from)
-            .collect::<Result<Vec<_>, _>>()
-            .map(|list| ScopeList(list))
+    #[non_exhaustive]
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct ResponseType;
+
+    impl ResponseType {
+        pub fn new(response_type: &str) -> Result<Self, AuthorizationQueryParsingError> {
+            if response_type == "code" {
+                Ok(Self)
+            } else {
+                Err(AuthorizationQueryParsingError::UnsupportedResponseType)
+            }
+        }
     }
 }
 
@@ -104,6 +153,7 @@ impl TryFrom<&str> for ScopeList {
 pub struct AuthorizationRequestQuery {
     /// All the parameters that aren't client, redirect_uri, scope and state are preserved as-is.
     opaque_parameters: OpaqueParameters,
+    pub response_type: ResponseType,
     pub client_id: ClientId,
     pub redirect_uri: RedirectUri,
     pub scope: ScopeList,
@@ -174,6 +224,19 @@ impl std::str::FromStr for AuthorizationRequestQuery {
         use AuthorizationQueryParams as Params;
         use AuthorizationQueryParsingError as Error;
 
+        #[derive(Deserialize)]
+        struct RedirectUriDeserializer {
+            redirect_uri: String,
+        }
+        let redirect_uri = serde_urlencoded::from_str::<RedirectUriDeserializer>(query)
+            .map_err(|_| Error::InvalidUri)?
+            .redirect_uri;
+
+        let redirect_uri = Uri::from_str(&redirect_uri).map_err(|_| Error::InvalidUri)?;
+        let redirect_uri = RedirectUri::new(redirect_uri).map_err(|_| Error::InvalidUri)?;
+
+        // All logic for rejecting URIs must go ABOVE HERE and must return InvalidUri.
+
         #[derive(Debug, Deserialize)]
         struct DeserializableSelf {
             response_type: Option<String>,
@@ -193,7 +256,7 @@ impl std::str::FromStr for AuthorizationRequestQuery {
                 DeserializableSelf {
                     response_type: empty_to_none(self.response_type),
                     client_id: empty_to_none(self.client_id),
-                    redirect_uri: empty_to_none(self.redirect_uri),
+                    redirect_uri: self.redirect_uri,
                     scope: empty_to_none(self.scope),
                     state: empty_to_none(self.state),
                     opaque_parameters: self.opaque_parameters,
@@ -216,30 +279,21 @@ impl std::str::FromStr for AuthorizationRequestQuery {
 
         tracing::trace!("Finished parsing query: {:?}", deserializable_self);
 
-        match deserializable_self.response_type {
-            None => return Err(Error::MissingParameter(Params::ResponseType.name())),
-            Some(s) if s != "code" => {
-                return Err(Error::UnsupportedResponseType);
-            }
-            // Some and s == code
-            _ => {}
-        }
+        let response_type = ResponseType::new(
+            &deserializable_self
+                .response_type
+                .ok_or(Error::MissingParameter(Params::ResponseType.name()))?,
+        )?;
 
-        let client_id = match deserializable_self.client_id {
-            Some(client_id) => client_id,
-            None => return Err(Error::MissingParameter(Params::ClientId.name())),
-        };
-
-        let redirect_uri = match deserializable_self.redirect_uri {
-            Some(redirect_uri) => redirect_uri,
-            None => return Err(Error::MissingParameter(Params::RedirectUri.name())),
-        };
-        let redirect_uri = Uri::from_str(&redirect_uri).map_err(|_err| Error::InvalidUri)?;
+        let client_id = deserializable_self
+            .client_id
+            .ok_or(Error::MissingParameter(Params::ClientId.name()))?;
 
         let scope = ScopeList::try_from(&deserializable_self.scope.unwrap_or_default() as &str)?;
 
         let result = AuthorizationRequestQuery {
             opaque_parameters: deserializable_self.opaque_parameters,
+            response_type,
             client_id,
             redirect_uri,
             scope,
