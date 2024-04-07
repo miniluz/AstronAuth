@@ -54,6 +54,7 @@ dependencies = [
  "color-eyre",
  "itertools",
  "serde",
+ "serde_json",
  "serde_urlencoded",
  "sqlx",
  "thiserror",
