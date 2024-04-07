@@ -7,8 +7,8 @@ pub use query::AuthorizationRequestQuery;
     path = "/authorization",
     params(AuthorizationRequestQuery),
     responses(
-        (status = 303, description = "
-Location will be set to request_uri.
+        (status = 303, description =
+"Location will be set to request_uri.
 
 If authorization is given, the `code`, the granted `scope` and the `state` parameter preserved as-is will be added to the Location's query string.
 
