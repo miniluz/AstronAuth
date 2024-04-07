@@ -97,21 +97,10 @@ impl IntoResponse for AuthorizationQueryParsingError {
             | Self::MissingParameter(_, redirect_uri)
             | Self::ParsingError(redirect_uri)
             | Self::RepeatedParameter(redirect_uri) => {
-                let mut query: Vec<(String, String)> = match serde_urlencoded::from_str(
-                    redirect_uri.get().query().unwrap_or_default(),
-                ) {
-                    Ok(vec) => vec,
-                    Err(_) => return (StatusCode::BAD_REQUEST, error_text).into_response(),
-                };
-                query.push(("error".to_owned(), standard_error_text.to_owned()));
-
-                let query = match serde_urlencoded::to_string(query) {
-                    Ok(str) => str,
-                    Err(_) => return (StatusCode::BAD_REQUEST, error_text).into_response(),
-                };
-
                 let mut redirect_uri = redirect_uri.get().clone();
-                redirect_uri.set_query(Some(&query));
+                redirect_uri
+                    .query_pairs_mut()
+                    .append_pair("error", standard_error_text);
 
                 (
                     StatusCode::SEE_OTHER,
