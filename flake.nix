@@ -29,7 +29,7 @@
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
           src = craneLib.cleanCargoSource (craneLib.path ./.);
 
-          nativeBuildInputs = [ rustToolchain ];
+          nativeBuildInputs = [ rustToolchain pkgs.bacon ];
           buildInputs = [ ];
 
           commonArgs = {

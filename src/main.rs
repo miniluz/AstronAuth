@@ -1,11 +1,24 @@
-use poem::{listener::TcpListener, Route, Server};
-use poem_openapi::OpenApiService;
+use axum::{routing, Router};
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
-mod api;
-mod query;
+mod auth;
 
 #[tokio::main]
 async fn main() -> color_eyre::eyre::Result<()> {
+    #[derive(OpenApi)]
+    #[openapi(
+        paths(
+            auth::authorization
+        ),
+        components(
+        ),
+        tags(
+            (name = "auth", description = "OAuth 2.0 authentication API")
+        )
+    )]
+    struct ApiDoc;
+
     // Initialize color_eyre
     color_eyre::install()?;
 
@@ -16,15 +29,14 @@ async fn main() -> color_eyre::eyre::Result<()> {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    // Start server
-    let api_service =
-        OpenApiService::new(api::Api, "Hello World", "1.0").server("http://localhost:3000");
-    let ui = api_service.openapi_explorer();
-    let app = Route::new().nest("/", api_service).nest("/docs", ui);
+    let app = Router::new()
+        .route("/authorization", routing::get(auth::authorization))
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
 
-    Server::new(TcpListener::bind("127.0.0.1:3000"))
-        .run(app)
-        .await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+        .await
+        .unwrap();
+    axum::serve(listener, app).await.unwrap();
 
     Ok(())
 }
